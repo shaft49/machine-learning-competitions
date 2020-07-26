@@ -1,10 +1,15 @@
 import torch
+import torchvision
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
 from model import Model, ConvNet
 import pandas as pd
+from torch.utils.tensorboard import SummaryWriter
+import sys
+writer = SummaryWriter("runs/mnist")
 # device config
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -15,7 +20,7 @@ hidden_size2 = 128
 num_classes = 10 # 0-9
 learning_rate = 0.0001
 batch_size = 100
-num_epochs = 50
+num_epochs = 20
 
 # step 0: prepare data
 class TrainDataset(Dataset):
@@ -59,10 +64,18 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
 datiter = iter(train_loader)
 features, labels = datiter.next()
 print(features.shape, labels.shape)
+# for i in range(6):
+#     plt.subplot(2, 3, i + 1)
+#     print(features.shape)
+#     plt.imshow(features[i][0], cmap = 'gray')
+# plt.show()
+img_grid = torchvision.utils.make_grid(features)
+writer.add_image('mnist images', img_grid)
 
-datiter = iter(test_loader)
-features = datiter.next()
-print(features.shape)
+
+# datiter = iter(test_loader)
+# features = datiter.next()
+# print(features.shape)
 print('Dataset is ready')
 
 # Step 1 : model
@@ -75,8 +88,13 @@ print('Model is declared')
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
+writer.add_graph(model, features)
+# writer.close()
+# sys.exit(0)
 # step 3: training
 n_total_steps = len(train_loader)
+running_loss = 0.0
+running_correct = 0
 for epoch in range(num_epochs):
     for i, (features, labels) in enumerate(train_loader):
         features = features.to(device) # cpu or gpu
@@ -87,16 +105,28 @@ for epoch in range(num_epochs):
         loss = criterion(y_predict, labels)
 
         # backward pass
+
+        optimizer.zero_grad()
         loss.backward()
 
         # update
         optimizer.step()
-        optimizer.zero_grad()
+        running_loss += loss.item()
+        _, predicted = torch.max(y_predict, 1)
+        running_correct += (predicted == labels).sum().item()
 
-        if (i + 1) % 200 == 0:
+        if (i + 1) % 100 == 0:
             print(f'Epoch [{epoch+1}/{num_epochs}], Step: [{i}/{n_total_steps}], Loss: [{loss.item():0.4f}]')
-print('Training is complete')
+            writer.add_scalar('training loss', running_loss / 100, epoch * n_total_steps + i)
+            writer.add_scalar('accuracy', running_correct / 100, epoch * n_total_steps + i)
+            running_loss = 0.0
+            running_correct = 0
+file_name = 'model.pth'
+torch.save(model, file_name)
+print(f'Training is complete and model is saved in {file_name}')
 # step 4: evaluate
+class_labels = []
+class_preds = []
 with torch.no_grad():
     n_correct = 0
     n_total = 0
@@ -109,9 +139,21 @@ with torch.no_grad():
         n_total += labels.size(0)
         n_correct += (predictions == labels).sum().item()
 
+        class_prob_batch = [F.softmax(output, dim=0) for output in outputs]
+
+        class_preds.append(class_prob_batch) # 10 different class probability
+        class_labels.append(predictions) # single class prediction
+
+class_preds = torch.cat([torch.stack(batch) for batch in class_preds])
+class_labels = torch.cat(class_labels)
 acc = 100.0 * n_correct / n_total
 print(f'Accuracy for {n_total} images is {acc:0.4f}')
-
+#tensorboard
+for i in range(10):
+    label_i = class_labels == i
+    preds_i = class_preds[:, i]
+    writer.add_pr_curve(str(i), label_i, preds_i, global_step=0)
+    writer.close()
 #evaluation in test set:
 
 image_id = []
